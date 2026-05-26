@@ -1,1 +1,2 @@
 - [ ] Test Lyra workbench write access
+- [ ] Test Lyra can write to the workbench after repo access setup
