@@ -678,7 +678,7 @@ Expected: FAIL — module not found
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Optional
 
 import requests
@@ -733,9 +733,7 @@ class EtsyClient:
 
         self._access_token = token
         # Tokens live 3600s; refresh at 3300s (5 min buffer)
-        self._token_expires_at = now.replace(tzinfo=None)
-        self._token_expires_at = datetime.now(timezone.utc).timestamp()  # simplify
-        self._access_token = token  # corrected: no expiration tracking for now
+        self._token_expires_at = now + timedelta(seconds=3300)
         return token
 
     def _headers(self) -> dict:
@@ -1760,7 +1758,7 @@ from typing import Optional
 import typer
 
 from etsy_store.config import Settings
-from etsy_store.db import init_db
+from etsy_store.db import init_db, OrderStatus
 from etsy_store.etsy_client import EtsyClient
 from etsy_store.mapper import ProductMapper
 from etsy_store.processor import OrderProcessor
@@ -1886,7 +1884,7 @@ def dispatch():
         typer.echo("✓ Dispatched successfully")
     else:
         typer.echo("✗ Dispatch failed")
-        queue.update_status(next_job.id, "pending")
+        queue.update_status(next_job.id, OrderStatus.PENDING)
 ```
 
 **Step 4: Run test to verify pass**

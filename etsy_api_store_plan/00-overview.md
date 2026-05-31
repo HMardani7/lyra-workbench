@@ -111,3 +111,138 @@ orders
 ├── created_at
 └── updated_at
 ```
+
+---
+
+## Etsy API v3 Response Shapes (Critical Reference)
+
+These are the exact JSON shapes returned by the Etsy API. The implementation must handle these structures.
+
+### Receipt List Response
+
+`GET /v3/application/shops/{shop_id}/receipts?min_created=X&max_created=Y&limit=100&offset=0`
+
+```json
+{
+  "count": 2,
+  "results": [
+    {
+      "receipt_id": 123456789,
+      "receipt_type": 0,
+      "seller_user_id": 987654321,
+      "buyer_user_id": 111222333,
+      "creation_tsz": 1717000000,
+      "was_paid": true,
+      "was_shipped": false,
+      "grandtotal": {
+        "amount": 4999,
+        "divisor": 100,
+        "currency_code": "USD"
+      },
+      "total_price": {
+        "amount": 3999,
+        "divisor": 100,
+        "currency_code": "USD"
+      },
+      "total_shipping_cost": {
+        "amount": 1000,
+        "divisor": 100,
+        "currency_code": "USD"
+      }
+    }
+  ]
+}
+```
+
+### Single Receipt Detail (WITH transactions)
+
+`GET /v3/application/shops/{shop_id}/receipts/{receipt_id}`
+
+```json
+{
+  "receipt_id": 123456789,
+  "grandtotal": {"amount": 4999, "divisor": 100, "currency_code": "USD"},
+  "transactions": [
+    {
+      "transaction_id": 5000001,
+      "listing_id": 2001,
+      "title": "Iron Man Helmet - 3D Printed Cosplay Prop",
+      "quantity": 1,
+      "price": {
+        "amount": 3999,
+        "divisor": 100,
+        "currency_code": "USD"
+      },
+      "variations": [
+        {
+          "property_id": 513,
+          "value_id": 1234,
+          "formatted_name": "Size",
+          "formatted_value": "22 inch"
+        }
+      ],
+      "product_id": 8000001,
+      "sku": "IMH-22"
+    }
+  ]
+}
+```
+
+**Key detail:** `transactions[].variations[]` is where customer selections live. Each variation has `formatted_name` (the property, like "Size") and `formatted_value` (the selection, like "22 inch"). The system extracts these into a dict: `{"Size": "22 inch"}`.
+
+For listings WITHOUT variations, `variations` is an empty array `[]`.
+
+### Listing Inventory (Variation Definitions)
+
+`GET /v3/application/listings/{listing_id}/inventory`
+
+```json
+{
+  "count": 1,
+  "results": {
+    "listing_id": 2001,
+    "products": [
+      {
+        "product_id": 8000001,
+        "sku": "IMH-22",
+        "property_values": [
+          {
+            "property_id": 513,
+            "property_name": "Size",
+            "value_ids": [1234],
+            "values": ["22 inch"]
+          }
+        ],
+        "offerings": [
+          {
+            "offering_id": 9000001,
+            "quantity": 5,
+            "price": {"amount": 3999, "divisor": 100, "currency_code": "USD"}
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### How the Mapper Uses This
+
+```
+Etsy Order (receipt)
+  └─ transaction.variations = [{"formatted_name": "Size", "formatted_value": "22 inch"}]
+       │
+       ▼
+  ProductMapper.resolve(
+      listing_id=2001,
+      property_values={"Size": "22 inch"}   ← extracted from variations
+  )
+       │
+       ▼
+  products.yaml lookup:
+    listings.2001.property = "Size"
+    listings.2001.files["22 inch"] = "helmet_circumference_22inch.gcode.3mf"
+       │
+       ▼
+  /data/products/iron_man_helmet/helmet_circumference_22inch.gcode.3mf
+```
