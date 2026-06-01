@@ -40,7 +40,7 @@ Signal → confidence check → duplicate cooldown
 
 1. Signal arrives during `process_all_signals()` tick
 2. If coin isn't in cache (last 15 min) → mark `pending_validation`, fire async research
-3. Research: DeepSeek V4 Pro + Brave Search API looks up current news, sentiment, price trends
+3. Research: DeepSeek V4 Pro + Tavily Search API looks up current news, sentiment, price trends
 4. LLM returns structured verdict: `{approved: bool, confidence: 0-1, reason, key_factors}`
 5. Next tick: verdict is in cache → signal proceeds (approved) or gets ignored (rejected)
 6. Cache hit: same coin within 15 min → instant verdict, zero API cost
@@ -77,7 +77,7 @@ By filtering out bad-context trades while still copying good ones:
 | `AI_VALIDATION_CACHE_TTL_SECONDS` | `900` | 15 min. Same-coin signals within this window hit cache. |
 | `AI_VALIDATION_FALLBACK_ON_TIMEOUT` | `false` | If true, approve signal when research times out. Safer to leave false. |
 | `AI_VALIDATION_MIN_CONFIDENCE` | `0.6` | LLM must return confidence ≥ this to approve. |
-| `BRAVE_SEARCH_API_KEY` | (required) | API key for Brave Search. Free tier: 2,000 queries/month. |
+| `TAVILY_API_KEY` | (required) | API key for Tavily. Free tier: 1,000 queries/month. |
 
 ### Scope
 
@@ -119,11 +119,11 @@ Tick-based async solves both:
 |------|-------|-----------|
 | 1.6T params (49B active) | MoE architecture | Strong reasoning for market analysis |
 | 1M token context | Huge window | Can ingest lots of search results |
-| Tool calling | ✅ Supported | Brave Search API passed as a tool |
+| Tool calling | ✅ Supported | Tavily Search API passed as a tool |
 | Response format | JSON mode supported | Structured verdict output |
 | Pricing | $0.435/M input, $0.87/M output | ~$0.002 per research call |
 
-The model does NOT have built-in web search — we pass Brave Search as a function calling tool. The LLM decides when to search and what to search for, then synthesizes results into a verdict.
+The model does NOT have built-in web search — we pass Tavily as a function calling tool. The LLM decides when to search and what to search for, then synthesizes results into a verdict.
 
 ---
 
@@ -132,11 +132,11 @@ The model does NOT have built-in web search — we pass Brave Search as a functi
 | File | Action | Purpose |
 |------|--------|---------|
 | `app/core/config.py` | Modify | Add AI validation config settings |
-| `.env.example` | Modify | Add `AI_VALIDATION_*` and `BRAVE_SEARCH_API_KEY` |
+| `.env.example` | Modify | Add `AI_VALIDATION_*` and `TAVILY_API_KEY` |
 | `app/db/models.py` | Modify | Add `AIValidationCache` model |
 | `app/ai/__init__.py` | Create | New `ai` package |
 | `app/ai/researcher.py` | Create | Core research logic (prompt, LLM call, cache) |
-| `app/ai/brave_search.py` | Create | Brave Search API client |
+| `app/ai/tavily_search.py` | Create | Tavily Search API client |
 | `app/ai/validator.py` | Create | `check_ai_validation()` entry point |
 | `app/risk/rules.py` | Modify | Call `check_ai_validation()` in `check_open_rules()` |
 | `app/invo/processor.py` | Modify | Call `check_ai_validation()` in `_process_open()` |
@@ -165,7 +165,7 @@ In `app/core/config.py`, add after the duplicate cooldown settings (around line 
     ai_validation_fallback_on_timeout: bool = False
     ai_validation_min_confidence: float = 0.6
     ai_validation_openrouter_api_key: str = ""
-    brave_search_api_key: str = ""
+    tavily_api_key: str = ""
 ```
 
 **Step 2: Add to .env.example**
@@ -181,7 +181,7 @@ AI_VALIDATION_CACHE_TTL_SECONDS=900
 AI_VALIDATION_FALLBACK_ON_TIMEOUT=false
 AI_VALIDATION_MIN_CONFIDENCE=0.6
 AI_VALIDATION_OPENROUTER_API_KEY=
-BRAVE_SEARCH_API_KEY=
+TAVILY_API_KEY=
 ```
 
 **Step 3: Verify**
@@ -252,13 +252,13 @@ Expected: `Cache rows: 0` and no errors.
 
 ---
 
-## Task 3: Implement Brave Search API client
+## Task 3: Implement Tavily Search API client
 
-**Objective:** Create a lightweight Brave Search client that DeepSeek V4 Pro calls as a tool.
+**Objective:** Create a lightweight Tavily client that DeepSeek V4 Pro calls as a tool.
 
 **Files:**
 - Create: `app/ai/__init__.py`
-- Create: `app/ai/brave_search.py`
+- Create: `app/ai/tavily_search.py`
 
 **Step 1: Create package init**
 
@@ -267,11 +267,16 @@ Expected: `Cache rows: 0` and no errors.
 """AI signal validation module."""
 ```
 
-**Step 2: Create Brave Search client**
+**Step 2: Create Tavily client**
 
-`app/ai/brave_search.py`:
+`app/ai/tavily_search.py`:
 ```python
-"""Brave Search API client — lightweight, async, no heavy deps."""
+"""Tavily Search API client — lightweight, async, no heavy deps.
+
+Tavily is an AI-optimized search API. Results come pre-summarized,
+which is ideal for feeding into an LLM for signal validation.
+Free tier: 1,000 queries/month.
+"""
 
 from __future__ import annotations
 
@@ -283,57 +288,57 @@ import httpx
 from app.core.config import get_settings
 
 
-BRAVE_API_URL = "https://api.search.brave.com/res/v1/web/search"
+TAVILY_API_URL = "https://api.tavily.com/search"
 
 
-async def brave_search(query: str, count: int = 8) -> list[dict[str, Any]]:
-    """Search the web via Brave Search API.
+async def tavily_search(query: str, count: int = 5) -> list[dict[str, Any]]:
+    """Search the web via Tavily Search API.
+
+    Tavily returns AI-optimized results with title, url, and content
+    (summary) fields. Uses POST with API key in the request body.
 
     Returns a list of simplified result dicts with 'title', 'url',
-    'description' keys.
+    'content' keys.
     """
     settings = get_settings()
-    api_key = settings.brave_search_api_key
+    api_key = settings.tavily_api_key
 
     if not api_key:
-        return [{"title": "Error", "url": "", "description": "Brave Search API key not configured"}]
+        return [{"title": "Error", "url": "", "content": "Tavily API key not configured — set TAVILY_API_KEY in .env"}]
 
-    headers = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip",
-        "X-Subscription-Token": api_key,
-    }
-    params: dict[str, str | int] = {
-        "q": query,
-        "count": min(count, 20),
-        "search_lang": "en",
+    payload: dict[str, Any] = {
+        "api_key": api_key,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": min(count, 10),
+        "include_answer": False,
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            response = await client.get(BRAVE_API_URL, headers=headers, params=params)
+            response = await client.post(TAVILY_API_URL, json=payload)
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as e:
-            return [{"title": "Search Error", "url": "", "description": str(e)}]
+            return [{"title": "Search Error", "url": "", "content": str(e)}]
 
     results: list[dict[str, Any]] = []
-    for item in data.get("web", {}).get("results", [])[:count]:
+    for item in data.get("results", [])[:count]:
         results.append({
             "title": item.get("title", ""),
             "url": item.get("url", ""),
-            "description": item.get("description", ""),
+            "content": item.get("content", ""),
         })
 
     if not results:
-        return [{"title": "No Results", "url": "", "description": f"No results found for: {query}"}]
+        return [{"title": "No Results", "url": "", "content": f"No results found for: {query}"}]
 
     return results
 
 
-def brave_search_sync(query: str, count: int = 8) -> list[dict[str, Any]]:
-    """Synchronous wrapper for brave_search. Used when calling from non-async context."""
-    return asyncio.run(brave_search(query, count))
+def tavily_search_sync(query: str, count: int = 5) -> list[dict[str, Any]]:
+    """Synchronous wrapper for tavily_search. Used when calling from non-async context."""
+    return asyncio.run(tavily_search(query, count))
 ```
 
 **Step 3: Verify**
@@ -342,9 +347,9 @@ def brave_search_sync(query: str, count: int = 8) -> list[dict[str, Any]]:
 cd /workspace/repos/hyperliquid-copy-bot
 uv run python -c "
 import asyncio
-from app.ai.brave_search import brave_search
+from app.ai.tavily_search import tavily_search
 # Test with no API key — should return error gracefully
-result = asyncio.run(brave_search('Bitcoin price today'))
+result = asyncio.run(tavily_search('Bitcoin price today'))
 print(f'Result count: {len(result)}')
 print(f'First result: {result[0]}')
 print('OK - no crash without API key')
@@ -355,7 +360,7 @@ print('OK - no crash without API key')
 
 ## Task 4: Implement the core researcher
 
-**Objective:** The research engine that calls DeepSeek V4 Pro with Brave Search as a tool, gets a structured verdict back, and caches it.
+**Objective:** The research engine that calls DeepSeek V4 Pro with Tavily as a tool, gets a structured verdict back, and caches it.
 
 **Files:**
 - Create: `app/ai/researcher.py`
@@ -425,7 +430,7 @@ trade as a spot long on Bitget if you approve.
 Research current conditions for {coin} and return your verdict."""
 
 # Tool definition passed to the LLM
-BRAVE_SEARCH_TOOL = {
+TAVILY_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
@@ -509,13 +514,13 @@ async def research_coin(coin: str, side: str, price: float) -> ValidationResult:
 async def _call_llm_with_search(
     coin: str, side: str, price: float, settings
 ) -> ValidationResult:
-    """Call DeepSeek V4 Pro via OpenRouter with Brave Search as a tool.
+    """Call DeepSeek V4 Pro via OpenRouter with Tavily as a tool.
 
     Uses a multi-turn approach: send prompt + tool definition, the LLM
     calls web_search, we execute the search, send results back, and the
     LLM returns the final verdict.
     """
-    from app.ai.brave_search import brave_search
+    from app.ai.tavily_search import tavily_search
 
     api_key = settings.ai_validation_openrouter_api_key
     if not api_key:
@@ -542,7 +547,7 @@ async def _call_llm_with_search(
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
-        "tools": [BRAVE_SEARCH_TOOL],
+        "tools": [TAVILY_SEARCH_TOOL],
         "tool_choice": "auto",
         "temperature": 0.3,  # Low temp for consistent analysis
         "max_tokens": 2000,
@@ -574,7 +579,7 @@ async def _call_llm_with_search(
                 if tc["function"]["name"] == "web_search":
                     args = json.loads(tc["function"]["arguments"])
                     query = args.get("query", f"{coin} crypto news")
-                    results = await brave_search(query, count=5)
+                    results = await tavily_search(query, count=5)
                     search_results_text = json.dumps(results, indent=2)
 
                     messages.append({
@@ -730,11 +735,11 @@ from app.ai.researcher import (
     prune_stale_cache,
     SYSTEM_PROMPT,
     USER_PROMPT_TEMPLATE,
-    BRAVE_SEARCH_TOOL,
+    TAVILY_SEARCH_TOOL,
 )
 print('All imports OK')
 print(f'System prompt length: {len(SYSTEM_PROMPT)} chars')
-print(f'Tool name: {BRAVE_SEARCH_TOOL[\"function\"][\"name\"]}')
+print(f'Tool name: {TAVILY_SEARCH_TOOL[\"function\"][\"name\"]}')
 "
 ```
 
@@ -1364,7 +1369,7 @@ After all tasks are complete, verify:
 - [ ] All AI validation config settings appear in `.env.example`
 - [ ] All settings fields exist in `Settings` class with correct defaults
 - [ ] `AIValidationCache` table created and queryable
-- [ ] `brave_search()` returns error gracefully when no API key configured
+- [ ] `tavily_search()` returns error gracefully when no API key configured
 - [ ] `research_coin()` returns `ValidationResult` with correct fields
 - [ ] Cache: store → lookup returns same result
 - [ ] Cache: different coin misses
@@ -1392,7 +1397,7 @@ After all tasks are complete, verify:
 | **Cache per coin+side** | Long and short for same coin may have different contexts. |
 | **"pending" signals stay "new"** | Re-evaluated next tick. No signal is lost due to slow research. |
 | **Expire on timeout (don't fallback)** | Safer default for paper trading. A missed opportunity < bad trade. |
-| **Brave Search (not Tavily/SerpAPI)** | Free tier (2K/mo). Good crypto coverage. Simple API. |
+| **Tavily Search API** | Free tier (1K/mo). AI-optimized results — returns pre-summarized content ideal for LLM consumption. Simpler API than Brave (POST with JSON body, no special headers). |
 | **DeepSeek V4 Pro via OpenRouter** | 1M context, tool calling, cheap ($0.002/call). Can swap to Flash for speed. |
 | **AI check before exposure rules** | Fast rejection saves computation. Don't calculate stakes for rejected trades. |
 | **Per-coin research (not per-signal)** | 5 wallets signal BTC = 1 LLM call. Cache makes the rest instant. |
