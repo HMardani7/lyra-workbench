@@ -9,7 +9,8 @@ These rules apply to Lyra, Codex, Kiro, and other agents using this repo.
    - `01-Knowledge/Context/Preferences.md`
    - `01-Knowledge/Context/Environment.md`
    - `01-Knowledge/Context/Active Work.md`
-   - relevant project files under `02-Projects/`
+   - `01-Knowledge/Context/Vault Operating Rules.md`
+   - relevant project overview/index files under `02-Projects/`
 
 ## During work
 
