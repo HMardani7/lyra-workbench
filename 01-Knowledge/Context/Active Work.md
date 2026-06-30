@@ -8,11 +8,11 @@ Do not use this as a detailed task tracker. Keep it curated.
 
 - Lyra Workbench is now connected to Hermes as the shared Obsidian/agent knowledge base.
 - Project source-of-truth files are being populated under `02-Projects/` from readable VPS repos.
+- Etsy 3D-print platform architecture/prompt docs are being drafted for Kiro under `03-Implementation-Plans/etsy-print-platform/`.
 
 ## Paused / Later
 
 - Orion Hermes integration.
-- Etsy 3D-print automation.
 - Aria improvements.
 
 ## Recently completed
